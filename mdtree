@@ -1,0 +1,103 @@
+#!/bin/bash
+# Запоминаем директорию запуска
+launch_dir="$(pwd)"
+# Проверяем аргументы
+if [ $# -eq 0 ]; then
+    # Если аргументов нет, используем текущую директорию
+    target_dir="$(pwd)"
+elif [ $# -eq 1 ]; then
+    # Если передан один аргумент, используем его как путь к директории
+    target_dir="$(realpath "$1")"
+    if [ ! -d "$target_dir" ]; then
+        echo "Ошибка: Директория '$1' не существует"
+        exit 1
+    fi
+else
+    echo "Использование: $(basename "$0") [директория]"
+    echo "Если директория не указана, используется текущая"
+    exit 1
+fi
+# Получаем название целевой директории
+current_dir=$(basename "$target_dir")
+# Создаем имя выходного файла в директории запуска
+output_file="${launch_dir}/${current_dir}-tree.md"
+# Получаем только имя файла для сравнения
+output_filename=$(basename "$output_file")
+# Переходим в целевую директорию для анализа
+cd "$target_dir" || exit 1
+
+# Проверяем количество файлов и глубину
+file_count=$(find . -type f -not -path '*/.*' | wc -l)
+max_depth=$(find . -type d -not -path '*/.*' -printf '%d\n' 2>/dev/null | sort -n | tail -1)
+
+if [ "$file_count" -gt 50 ]; then
+    echo "Предупреждение: Найдено $file_count файлов (больше 50). Продолжить? (y/N)"
+    read -r answer
+    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+        echo "Операция отменена"
+        exit 0
+    fi
+fi
+
+if [ "$max_depth" -gt 7 ]; then
+    echo "Предупреждение: Глубина директории $max_depth уровней (больше 7). Продолжить? (y/N)"
+    read -r answer
+    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+        echo "Операция отменена"
+        exit 0
+    fi
+fi
+# Очищаем файл если он существует
+>"$output_file"
+echo "Создаю файл: $output_file"
+echo "Анализирую директорию: $target_dir"
+# Добавляем заголовок и структуру директории
+{
+    echo "# Структура и содержимое директории: $current_dir"
+    echo ""
+    echo "**Путь:** $target_dir"
+    echo ""
+    echo "## Структура директории"
+    echo ""
+    echo '```'
+    tree
+    echo '```'
+    echo ""
+    echo "## Содержимое файлов"
+    echo ""
+} >>"$output_file"
+# Находим все файлы (исключая директории и скрытые файлы)
+find . -type f -not -path '*/.*' -not -name "$output_filename" | sort | while read -r file; do
+    # Получаем относительный путь без ./
+    relative_path="${file#./}"
+    echo "Обрабатываю: $relative_path"
+    # Добавляем заголовок файла
+    {
+        echo "### $relative_path"
+        echo ""
+        # Пытаемся определить тип файла для подсветки синтаксиса
+        extension="${file##*.}"
+        case "$extension" in
+        js | javascript) lang="javascript" ;;
+        py | python) lang="python" ;;
+        sh | bash) lang="bash" ;;
+        html | htm) lang="html" ;;
+        css) lang="css" ;;
+        json) lang="json" ;;
+        xml) lang="xml" ;;
+        md | markdown) lang="markdown" ;;
+        txt) lang="text" ;;
+        *) lang="" ;;
+        esac
+        echo "\`\`\`$lang"
+        # Проверяем, является ли файл текстовым
+        if file "$file" | grep -q "text\|empty"; then
+            cat "$file"
+        else
+            echo "[Бинарный файл - содержимое не отображается]"
+        fi
+        echo '```'
+        echo ""
+    } >>"$output_file"
+done
+echo "Готово! Результат сохранен в: $output_file"
