@@ -1,0 +1,224 @@
+#!/bin/bash
+
+# Конфигурация
+SSH_USER="mylogin"
+SSH_HOST="myserverIP"
+SSH_PORT="22"
+LOCAL_PROXY_PORT="8080"
+SSH_KEY_PATH="$HOME/.ssh/id_rsa" # путь к SSH ключу (опционально)
+
+# Имя процесса для идентификации
+TUNNEL_NAME="ssh-proxy-tunnel"
+
+# Функция проверки запущен ли туннель
+check_tunnel() {
+    pgrep -f "ssh.*$LOCAL_PROXY_PORT.*$SSH_HOST" >/dev/null 2>&1
+}
+
+# Функция запуска туннеля
+start_tunnel() {
+    echo "Запуск SSH туннеля..."
+
+    # Запуск SSH туннеля в фоне с SOCKS5 прокси
+    if [ -f "$SSH_KEY_PATH" ]; then
+        # С использованием SSH ключа
+        nohup ssh -D $LOCAL_PROXY_PORT -f -C -q -N \
+            -i "$SSH_KEY_PATH" \
+            -p $SSH_PORT \
+            -o ServerAliveInterval=60 \
+            -o ServerAliveCountMax=3 \
+            -o ExitOnForwardFailure=yes \
+            "$SSH_USER@$SSH_HOST" >/dev/null 2>&1 &
+    else
+        # Без SSH ключа (потребуется ввод пароля)
+        nohup ssh -D $LOCAL_PROXY_PORT -f -C -q -N \
+            -p $SSH_PORT \
+            -o ServerAliveInterval=60 \
+            -o ServerAliveCountMax=3 \
+            -o ExitOnForwardFailure=yes \
+            "$SSH_USER@$SSH_HOST" >/dev/null 2>&1 &
+    fi
+
+    # Проверяем успешность запуска
+    sleep 2
+    if check_tunnel; then
+        echo "SSH туннель успешно запущен на порту $LOCAL_PROXY_PORT"
+        echo "SOCKS5 прокси доступен по адресу: 127.0.0.1:$LOCAL_PROXY_PORT"
+    else
+        echo "Ошибка при запуске SSH туннеля"
+        return 1
+    fi
+}
+
+# Функция остановки туннеля
+stop_tunnel() {
+    echo "Остановка SSH туннеля..."
+    pkill -f "ssh.*$LOCAL_PROXY_PORT.*$SSH_HOST"
+    echo "SSH туннель остановлен"
+}
+
+# Функция настройки переменных окружения
+setup_proxy_env() {
+    PROXY_URL="socks5://127.0.0.1:$LOCAL_PROXY_PORT"
+    export http_proxy="$PROXY_URL"
+    export https_proxy="$PROXY_URL"
+    export HTTP_PROXY="$PROXY_URL"
+    export HTTPS_PROXY="$PROXY_URL"
+    export ALL_PROXY="$PROXY_URL"
+    echo "Переменные окружения прокси установлены"
+}
+
+# Функция сброса переменных окружения
+unset_proxy_env() {
+    unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
+    echo "Переменные окружения прокси сброшены"
+}
+
+# Функция показа справки
+show_help() {
+    cat <<EOF
+SSH Proxy Tunnel - управление SOCKS5 прокси через SSH туннель
+
+ИСПОЛЬЗОВАНИЕ:
+    $0 [КОМАНДА]
+
+КОМАНДЫ:
+    start       Запустить SSH туннель и установить переменные окружения
+    stop        Остановить SSH туннель и сбросить переменные окружения
+    restart     Перезапустить туннель и переменные окружения
+    status      Показать статус туннеля и переменных окружения
+    env-on      Установить переменные окружения (если туннель запущен)
+    env-off     Сбросить переменные окружения (туннель остается активным)
+    env-status  Показать статус переменных окружения
+    help        Показать эту справку
+
+ПРИМЕРЫ:
+    $0              # Запуск туннеля если не запущен (поведение по умолчанию)
+    $0 start        # Явный запуск туннеля с переменными окружения
+    $0 stop         # Остановка туннеля и сброс переменных
+    $0 status       # Проверить статус туннеля и переменных
+    $0 env-off      # Временно отключить прокси для приложений
+
+НАСТРОЙКА:
+    Отредактируйте переменные в начале скрипта:
+    - SSH_USER: ваш логин на сервере
+    - SSH_HOST: IP или домен вашего сервера
+    - SSH_PORT: порт SSH (обычно 22)
+    - LOCAL_PROXY_PORT: локальный порт для прокси (по умолчанию 8080)
+    - SSH_KEY_PATH: путь к SSH ключу
+
+ПРОВЕРКА РАБОТЫ:
+    # Тест без прокси
+    curl https://httpbin.org/ip
+    
+    # Тест с прокси (должен показать IP вашего сервера)
+    $0 start
+    curl https://httpbin.org/ip
+
+ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ:
+    Скрипт автоматически устанавливает следующие переменные:
+    - http_proxy=socks5://127.0.0.1:$LOCAL_PROXY_PORT
+    - https_proxy=socks5://127.0.0.1:$LOCAL_PROXY_PORT
+    - HTTP_PROXY=socks5://127.0.0.1:$LOCAL_PROXY_PORT
+    - HTTPS_PROXY=socks5://127.0.0.1:$LOCAL_PROXY_PORT
+    - ALL_PROXY=socks5://127.0.0.1:$LOCAL_PROXY_PORT
+
+ПРИЛОЖЕНИЯ:
+    После установки переменных окружения прокси автоматически используют:
+    aichat, curl, wget, pip, npm, git (с дополнительной настройкой)
+
+АЛИАС:
+    Для удобства создайте алиас:
+    echo 'alias proxy="$PWD/$0"' >> ~/.zshrc && source ~/.zshrc
+    
+    Затем используйте: proxy start, proxy stop, proxy status
+
+EOF
+}
+status_tunnel() {
+    if check_tunnel; then
+        echo "SSH туннель запущен (SOCKS5 прокси на 127.0.0.1:$LOCAL_PROXY_PORT)"
+
+        # Показываем PID процесса
+        TUNNEL_PID=$(pgrep -f "ssh.*$LOCAL_PROXY_PORT.*$SSH_HOST")
+        echo "PID процесса: $TUNNEL_PID"
+
+        # Проверяем переменные окружения
+        if [ -n "$http_proxy" ] && [ "$http_proxy" = "socks5://127.0.0.1:$LOCAL_PROXY_PORT" ]; then
+            echo "Переменные окружения прокси: установлены"
+        else
+            echo "Переменные окружения прокси: не установлены"
+        fi
+    else
+        echo "SSH туннель не запущен"
+        if [ -n "$http_proxy" ]; then
+            echo "Переменные окружения прокси: установлены (но туннель не работает)"
+        else
+            echo "Переменные окружения прокси: не установлены"
+        fi
+    fi
+}
+
+# Основная логика
+case "$1" in
+start)
+    if check_tunnel; then
+        echo "SSH туннель уже запущен"
+        status_tunnel
+    else
+        start_tunnel
+        if [ $? -eq 0 ]; then
+            setup_proxy_env
+        fi
+    fi
+    ;;
+stop)
+    stop_tunnel
+    unset_proxy_env
+    ;;
+restart)
+    stop_tunnel
+    unset_proxy_env
+    sleep 1
+    start_tunnel
+    if [ $? -eq 0 ]; then
+        setup_proxy_env
+    fi
+    ;;
+status)
+    status_tunnel
+    ;;
+env-on)
+    if check_tunnel; then
+        setup_proxy_env
+    else
+        echo "Ошибка: SSH туннель не запущен. Сначала запустите туннель."
+        exit 1
+    fi
+    ;;
+env-off)
+    unset_proxy_env
+    ;;
+env-status)
+    if [ -n "$http_proxy" ]; then
+        echo "Переменные окружения прокси установлены: $http_proxy"
+    else
+        echo "Переменные окружения прокси не установлены"
+    fi
+    ;;
+help | --help | -h)
+    show_help
+    ;;
+*)
+    # Поведение по умолчанию - запуск если не запущен
+    if check_tunnel; then
+        echo "SSH туннель уже запущен"
+        status_tunnel
+    else
+        start_tunnel
+        if [ $? -eq 0 ]; then
+            setup_proxy_env
+        fi
+    fi
+    ;;
+esac
